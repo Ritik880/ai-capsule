@@ -6,7 +6,7 @@ and an application JWT issued by Express and stored in an HttpOnly cookie.
 
 ## 1. Deployed URL
 
-- **Public URL:** `TODO — fill in after deploying to Render (e.g. https://ai-capsule.onrender.com)`
+- **Public URL:** https://ai-capsule-fxr7.onrender.com
 - **Cloud platform:** Render (free web service)
 
 ## 2. Install & run locally
@@ -101,10 +101,11 @@ No secret values are committed to the repository; `.env` is in `.gitignore`.
   created automatically on first run if it doesn't exist.
 - Every row has a `user_id` column holding the GitHub user ID from the verified JWT —
   this is how records are scoped to their owner.
-- **Persistence:** `TODO — confirm after deployment.` Render's free web service has an
-  ephemeral filesystem, so the SQLite file (`capsules.db`) will be reset on restart or
-  redeploy unless a Render persistent disk (or an external database) is attached. State
-  this plainly as a known limitation if a persistent disk isn't used.
+- **Persistence:** Ephemeral. This deployment uses Render's free web service with no
+  persistent disk attached, so the SQLite file (`capsules.db`) lives on the container's
+  local filesystem and is reset whenever the service restarts or redeploys. Capsule data
+  does not survive across deploys. See section 8 for how this is documented as a
+  limitation.
 
 ## 7. Required cURL tests
 
@@ -112,42 +113,64 @@ Run against the deployed backend before submission:
 
 ```bash
 # Test 1 — no authentication
-curl -i https://YOUR-APP/api/capsules
+curl -i https://ai-capsule-fxr7.onrender.com/api/capsules
 # Required: 401 Unauthorized
 
 # Test 2 — fake / invalid JWT
-curl -i -H "Cookie: token=fake-token-123" https://YOUR-APP/api/capsules
+curl -i -H "Cookie: token=fake-token-123" https://ai-capsule-fxr7.onrender.com/api/capsules
 # Required: 401 Unauthorized
 ```
 
-**Results (local, confirmed working):**
+**Results (deployed, confirmed working):**
+- Test 1 → `HTTP/2 401` with body `{"error":"Unauthorized"}` ✅
+- Test 2 → `HTTP/2 401` with body `{"error":"Unauthorized"}` ✅
+- `GET /api/health` → `{"status":"ok"}` ✅
+
+**Results (local, confirmed working during development):**
 - Test 1 → `HTTP/1.1 401 Unauthorized` ✅
 - Test 2 → `HTTP/1.1 401 Unauthorized` ✅
 - `GET /api/health` → `{"status":"ok"}` ✅
 
-**Results (deployed):** `TODO — re-run both commands against the deployed URL and paste
-the output here once deployed.`
-
 ## 8. Known limitation
 
-`TODO — state one honest limitation`, e.g.: SQLite on Render's free tier is not
-persistent across restarts/redeploys (data loss risk), or: no refresh-token flow, so a
-user must re-authenticate via GitHub after the 7-day JWT expires.
+SQLite storage on this deployment is not persistent: Render's free web service tier has
+no attached disk, so `capsules.db` lives on the container's ephemeral local filesystem and
+is wiped on every restart or redeploy. This is acceptable for demonstrating the required
+CRUD/OAuth/JWT behaviour but would need a Render persistent disk or an external database
+(e.g. Render PostgreSQL) for real production use.
 
 ## 9. AI-assisted development statement
 
 - **AI tools used:** Claude (Claude Code).
-- **Problem found and corrected:** `TODO — e.g. the GitHub OAuth redirect initially failed
-  with a 404 because the backend process had loaded stale environment variables from
-  before .env was updated with the real GITHUB_CLIENT_ID — fixed by restarting the
-  process.`
+- **Problems found and corrected:**
+  1. The local backend process had loaded stale environment variables from before `.env`
+     was updated with the real `GITHUB_CLIENT_ID` (env vars are only read at process
+     startup) — the `/auth/github` redirect sent the literal placeholder string
+     `your_github_client_id` to GitHub, causing a 404. Fixed by restarting the process.
+  2. On Render, the web service's Build/Start commands defaulted to `yarn` (with no
+     root-level `package.json`), so the app never actually installed dependencies, built
+     the frontend, or started Express — causing a crash loop and `502` responses. Fixed by
+     setting explicit Build/Start commands (`npm install`/`npm run build` per workspace,
+     `npm start --prefix backend`).
+  3. With `NODE_ENV=production` set, `npm install --prefix frontend` skipped
+     `devDependencies` (including `vite`), so `npm run build` failed with
+     `vite: not found`. Fixed by forcing `--include=dev` on that specific install step,
+     since the frontend build tooling is needed at build time regardless of `NODE_ENV`.
+  4. The production GitHub OAuth app's callback URL edit hadn't actually been saved
+     (GitHub requires clicking "Update application" separately from generating a secret),
+     causing a "redirect_uri is not associated with this application" error; and a
+     mismatched `GITHUB_CLIENT_SECRET` value caused GitHub's token exchange to fail with
+     `incorrect_client_credentials`. Both were caught by reading the server's own log
+     output (`console.error` in the OAuth callback) rather than guessing.
 - **How OAuth/JWT/protected-API behaviour was verified:** manually via GitHub login in the
-  browser, checking the `token` cookie in DevTools (HttpOnly, correct name), and running
-  the two required `curl` commands above to confirm `401` on missing/invalid tokens.
+  browser on the deployed URL, checking the `token` cookie in DevTools (HttpOnly, correct
+  name), and running the two required `curl` commands above against the deployed URL to
+  confirm `401` on missing/invalid tokens.
 - **How CRUD and ownership were verified:** manually created, edited, and deleted capsules
-  through the dashboard UI while logged in as a single GitHub account; confirmed
+  through the deployed dashboard UI while logged in with a GitHub account; confirmed
   `PUT`/`DELETE` use `WHERE user_id = ?` in `backend/capsules.js` by code inspection.
 - **One implementation/deployment decision:** the frontend and backend are deployed as a
-  single Render web service (Express serves the built React app), rather than as two
-  separate services, specifically to avoid cross-origin cookie and CORS configuration for
-  the `token` cookie.
+  single Render web service (Express serves the built React app from `frontend/dist`),
+  rather than as two separate services, specifically to avoid cross-origin cookie and CORS
+  configuration for the `token` cookie — the frontend's API calls become relative paths in
+  production so everything shares one origin.
